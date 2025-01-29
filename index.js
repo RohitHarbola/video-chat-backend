@@ -1,10 +1,10 @@
+import pkg from 'pg'; 
+const { Pool } = pkg; 
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
-import { Pool } from "pg";
 import dotenv from "dotenv";
-
 dotenv.config();
 
 const app = express();
