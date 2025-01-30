@@ -22,44 +22,45 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// Create tables
+// Create tables with correct column names
 const createTables = async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
-      user_id VARCHAR(255) UNIQUE NOT NULL,
-      interests JSONB NOT NULL
+      username VARCHAR(255) NOT NULL,
+      interests TEXT NOT NULL
     );
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS matches (
       id SERIAL PRIMARY KEY,
-      user1_id VARCHAR(255) REFERENCES users(user_id),
-      user2_id VARCHAR(255) REFERENCES users(user_id)
+      user1_id INT REFERENCES users(id),
+      user2_id INT REFERENCES users(id)
     );
   `);
 };
+
 createTables();
 
-// Store user interests in DB (Fixes incorrect SQL query)
-app.post("/api/interests", async (req, res) => {
-  const { userId, interests } = req.body;
 
-  if (!userId || !interests) {
-    return res.status(400).json({ error: "User ID and interests are required" });
+app.post("/api/interests", async (req, res) => {
+  const { username, interests } = req.body;
+
+  if (!username || !interests) {
+    return res.status(400).json({ error: "Username and interests are required" });
   }
 
   try {
     // Convert interests string into an array
     const interestArray = interests.split(",").map((word) => word.trim().toLowerCase());
 
-    await pool.query(
-      `INSERT INTO users (user_id, interests) VALUES ($1, $2)
-      ON CONFLICT (user_id) DO UPDATE SET interests = EXCLUDED.interests`,
-      [userId, JSON.stringify(interestArray)] // Store interests as JSON array
+    // Insert user and return the ID
+    const result = await pool.query(
+      `INSERT INTO users (username, interests) VALUES ($1, $2) RETURNING id`,
+      [username, JSON.stringify(interestArray)]
     );
 
-    res.json({ success: true });
+    res.json({ success: true, userId: result.rows[0].id });
   } catch (err) {
     console.error("Error storing interests:", err.message);
     res.status(500).json({ error: err.message });
@@ -67,44 +68,43 @@ app.post("/api/interests", async (req, res) => {
 });
 
 
+
 // Match users based on cosine similarity
 app.get("/api/match/:userId", async (req, res) => {
   const { userId } = req.params;
 
   try {
-    const userResult = await pool.query("SELECT interests FROM users WHERE user_id = $1", [userId]);
+    const userResult = await pool.query("SELECT interests FROM users WHERE id = $1", [userId]);
 
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    if (userResult.rows.length === 0) return res.status(404).json({ error: "User not found" });
 
-    const userInterests = userResult.rows[0].interests;
+    const userInterests = JSON.parse(userResult.rows[0].interests);
 
-    // Find potential matches
-    const allUsers = await pool.query("SELECT user_id, interests FROM users WHERE user_id != $1", [userId]);
+    const allUsers = await pool.query("SELECT id, interests FROM users WHERE id != $1", [userId]);
 
     let bestMatch = null;
     let highestScore = -1;
 
     for (const row of allUsers.rows) {
-      const matchInterests = row.interests;
+      const matchInterests = JSON.parse(row.interests);
       const score = cosineSimilarity(userInterests, matchInterests);
       if (score > highestScore) {
         highestScore = score;
-        bestMatch = row.user_id;
+        bestMatch = row.id;
       }
     }
 
     if (bestMatch) {
       res.json({ matchedUser: bestMatch });
     } else {
-      res.json({ message: "No matches found" });  
+      res.json({ message: "No matches found" });
     }
   } catch (err) {
     console.error("Error finding match:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // WebRTC Signaling
 io.on("connection", (socket) => {
