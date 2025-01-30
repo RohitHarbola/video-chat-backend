@@ -1,10 +1,12 @@
-import pkg from 'pg'; 
-const { Pool } = pkg; 
+import pkg from "pg";
+const { Pool } = pkg;
 import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
 import dotenv from "dotenv";
+import cosineSimilarity from "cosine-similarity";
+
 dotenv.config();
 
 const app = express();
@@ -18,93 +20,129 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
+// PostgreSQL Connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
-// Create tables
+// Create tables if they don’t exist
 const createTables = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id SERIAL PRIMARY KEY,
-      username VARCHAR(255) NOT NULL,
-      interest VARCHAR(255) NOT NULL
-    );
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS matches (
-      id SERIAL PRIMARY KEY,
-      user1_id INT REFERENCES users(id),
-      user2_id INT REFERENCES users(id)
-    );
-  `);
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(255) NOT NULL,
+        interests TEXT[] NOT NULL
+      );
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS matches (
+        id SERIAL PRIMARY KEY,
+        user1_id INT REFERENCES users(id),
+        user2_id INT REFERENCES users(id),
+        UNIQUE(user1_id, user2_id)
+      );
+    `);
+    console.log("✅ Database tables checked/created.");
+  } catch (error) {
+    console.error("❌ Error creating tables:", error);
+  }
 };
 createTables();
 
-// API to store user interest
-app.post("/api/users", async (req, res) => {
-  const { username, interest } = req.body;
+// Store user interests in the database
+app.post("/api/interests", async (req, res) => {
+  const { userId, username, interests } = req.body;
+  if (!userId || !username || !interests) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
   try {
-    const result = await pool.query(
-      "INSERT INTO users (username, interest) VALUES ($1, $2) RETURNING *",
-      [username, interest]
+    const interestArray = interests.split(",").map((i) => i.trim().toLowerCase());
+
+    await pool.query(
+      `INSERT INTO users (id, username, interests) VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO UPDATE SET interests = $3`,
+      [userId, username, interestArray]
     );
-    res.json(result.rows[0]);
+
+    res.json({ success: true, message: "Interests saved successfully" });
   } catch (err) {
+    console.error("❌ Error saving interests:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// API to find a match
-app.get("/api/match/:interest", async (req, res) => {
-  const { interest } = req.params;
+// Match users based on cosine similarity
+app.get("/api/match/:userId", async (req, res) => {
+  const { userId } = req.params;
+
   try {
-    const result = await pool.query(
-      "SELECT * FROM users WHERE interest = $1 LIMIT 2",
-      [interest]
-    );
-    if (result.rows.length === 2) {
-      await pool.query(
-        "INSERT INTO matches (user1_id, user2_id) VALUES ($1, $2)",
-        [result.rows[0].id, result.rows[1].id]
+    const userResult = await pool.query("SELECT interests FROM users WHERE id = $1", [userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const userInterests = userResult.rows[0].interests;
+    const allUsers = await pool.query("SELECT id, interests FROM users WHERE id != $1", [userId]);
+
+    let bestMatch = null;
+    let highestScore = -1;
+
+    for (const row of allUsers.rows) {
+      const matchInterests = row.interests;
+      const score = cosineSimilarity(
+        userInterests.map((i) => (matchInterests.includes(i) ? 1 : 0)),
+        matchInterests.map((i) => (userInterests.includes(i) ? 1 : 0))
       );
-      res.json({ match: result.rows });
+
+      if (score > highestScore) {
+        highestScore = score;
+        bestMatch = row.id;
+      }
+    }
+
+    if (bestMatch) {
+      res.json({ matchedUser: bestMatch });
     } else {
-      res.json({ message: "Waiting for a match" });
+      res.json({ message: "No matches found" });
     }
   } catch (err) {
+    console.error("❌ Error finding match:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// WebSocket signaling for WebRTC
+// WebRTC Signaling
 io.on("connection", (socket) => {
-  console.log("A user connected");
+  console.log("✅ User connected:", socket.id);
 
-  socket.on("join-room", (roomId) => {
+  socket.on("join-room", ({ roomId, userId }) => {
     socket.join(roomId);
-    console.log(`User joined room: ${roomId}`);
+    socket.broadcast.to(roomId).emit("user-connected", userId);
   });
 
-  socket.on("offer", ({ roomId, sdp }) => {
-    socket.to(roomId).emit("offer", { sdp });
+  socket.on("offer", (data) => {
+    socket.broadcast.to(data.roomId).emit("offer", data);
   });
 
-  socket.on("answer", ({ roomId, sdp }) => {
-    socket.to(roomId).emit("answer", { sdp });
+  socket.on("answer", (data) => {
+    socket.broadcast.to(data.roomId).emit("answer", data);
   });
 
-  socket.on("ice-candidate", ({ roomId, candidate }) => {
-    socket.to(roomId).emit("ice-candidate", { candidate });
+  socket.on("ice-candidate", (data) => {
+    socket.broadcast.to(data.roomId).emit("ice-candidate", data);
   });
 
   socket.on("disconnect", () => {
-    console.log("A user disconnected");
+    console.log("❌ User disconnected:", socket.id);
   });
 });
 
+// Start the server
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
