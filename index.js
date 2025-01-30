@@ -44,28 +44,28 @@ createTables();
 
 
 app.post("/api/interests", async (req, res) => {
-  const { username, interests } = req.body;
+  const { userId, interests } = req.body;
 
-  if (!username || !interests) {
-    return res.status(400).json({ error: "Username and interests are required" });
+  console.log("Received data:", req.body); // Log request data for debugging
+
+  if (!userId || !interests || !Array.isArray(interests) || interests.length === 0) {
+    return res.status(400).json({ error: "Username and interests are required and should be a valid array." });
   }
 
   try {
-    // Convert interests string into an array
-    const interestArray = interests.split(",").map((word) => word.trim().toLowerCase());
-
-    // Insert user and return the ID
-    const result = await pool.query(
-      `INSERT INTO users (username, interests) VALUES ($1, $2) RETURNING id`,
-      [username, JSON.stringify(interestArray)]
+    await pool.query(
+      `INSERT INTO users (user_id, interests) VALUES ($1, $2)
+      ON CONFLICT (user_id) DO UPDATE SET interests = EXCLUDED.interests`,
+      [userId, JSON.stringify(interests)] // Store interests as JSON array
     );
 
-    res.json({ success: true, userId: result.rows[0].id });
+    res.json({ success: true });
   } catch (err) {
     console.error("Error storing interests:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 
