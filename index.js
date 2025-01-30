@@ -83,8 +83,8 @@ app.post("/api/interests", async (req, res) => {
 
   try {
     await pool.query(
-      `INSERT INTO users (id, interests) VALUES ($1, $2)
-      ON CONFLICT (id) DO UPDATE SET interests = EXCLUDED.interests`,
+      `INSERT INTO users (username, interests) VALUES ($1, $2)
+      ON CONFLICT (username) DO UPDATE SET interests = EXCLUDED.interests`,
       [username, JSON.stringify(interests)] // Store interests as JSON array
     );
 
