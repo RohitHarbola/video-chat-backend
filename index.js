@@ -150,7 +150,11 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => console.log("User disconnected"));
 });
-
+//disconnect call
+socket.on("disconnect-call", ({ roomId }) => {
+  socket.to(roomId).emit("disconnect-call");
+  console.log(`Call disconnected in room: ${roomId}`);
+});
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
